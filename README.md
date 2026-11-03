@@ -132,6 +132,58 @@ Tips:
 - Treat copied `Cookie` and `Authorization` values as passwords. Don't commit
   them or paste them into shared shell history.
 
+### Without DevTools: `chrome://net-export`
+
+DevTools can be unavailable, for example when it's disabled by an enterprise
+policy or a page closes or blanks itself as soon as DevTools opens. In that
+case you can record a *NetLog* instead. Chrome writes it from the network
+stack itself, so the page can't see or interfere with it.
+
+1. Open a new tab at `chrome://net-export`.
+2. Under **Options**, pick a privacy level:
+   - **Strip private information** (default): records URLs, but redacts
+     cookies and credentials. Use this when only `Referer`, `Origin` or
+     `User-Agent` matter.
+   - **Include cookies and credentials**: needed if the stream requires a
+     `Cookie` or `Authorization` header.
+   - Leave **Include raw bytes** off. It isn't needed and makes the file huge.
+3. Click **Start Logging to Disk** and choose where to save the `.json` file.
+4. Switch to the video tab, **reload** it and **play** for a few seconds.
+5. Go back to the net-export tab and click **Stop Logging**.
+
+Then get the playlist URL and headers out of the log. The quickest way is
+from the shell:
+
+```bash
+# Playlist URLs
+grep -oE 'https?://[^"]+\.m3u8[^"]*' chrome-net-export-log.json | sort -u
+
+# Request headers that are usually needed (case-insensitive; HTTP/2 and
+# HTTP/3 logs use lowercase names)
+grep -oiE '"(referer|origin|cookie|authorization|user-agent): [^"]*"' \
+    chrome-net-export-log.json | sort -u
+```
+
+To see the headers next to a specific request, use the
+[NetLog Viewer](https://netlog-viewer.appspot.com/) instead:
+
+1. Open the viewer and load the `.json` file under **Import**.
+2. Open the **Events** tab and type `m3u8` in the filter box.
+3. Click a `URL_REQUEST` entry. The headers sent are listed under
+   `HTTP_TRANSACTION_SEND_REQUEST_HEADERS`. For HTTP/2 and HTTP/3 they appear
+   under `…_HTTP2_SEND_REQUEST_HEADERS` and `…_QUIC_SEND_REQUEST_HEADERS`
+   instead.
+
+Notes:
+
+- Administrators can block `chrome://net-export` too, for example through
+  the `URLBlocklist` policy. If both are blocked, use another browser or a
+  proxy such as [mitmproxy](https://mitmproxy.org/).
+- A log made with **Include cookies and credentials** holds live session
+  tokens for *every* site you visited while logging. Log as briefly as you can
+  (ideally in a fresh window), don't share the file, and delete it when you're
+  done.
+
 ## Tradeoffs and limitations
 
 - **No encrypted streams.** Playlists with `EXT-X-KEY` (AES-128, SAMPLE-AES)
