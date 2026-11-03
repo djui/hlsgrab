@@ -5,10 +5,16 @@ headers your browser sent. It's one Python file with no third-party packages.
 
 Some sites only serve their HLS segments when the request carries the right
 `Referer`, `Origin`, `Cookie` or `User-Agent` headers. Generic downloaders then
-fail with `403 Forbidden`. `hlsgrab` lets you copy those headers from Chrome
-DevTools and replay them for every playlist and segment request.
+fail with `403 Forbidden`. Give `hlsgrab` a Chrome network capture (HAR
+export, `chrome://net-export` log or "Copy as cURL"). It finds the playlist
+request in the capture and replays that request's headers for every playlist
+and segment request.
 
 ```bash
+# From a capture (no copying of URLs or headers by hand)
+./hlsgrab.py capture.har -o video.mp4
+
+# Or with the URL and headers spelled out
 ./hlsgrab.py "https://cdn.example.com/video/index.m3u8" -o video.mp4 \
     -H "Referer: https://example.com/" \
     -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
@@ -16,7 +22,12 @@ DevTools and replay them for every playlist and segment request.
 
 ## Features
 
-- **Master playlists:** automatically picks the highest-bandwidth variant.
+- **Chrome captures as input:** reads a HAR file, a `chrome://net-export`
+  NetLog, or one or more "Copy as cURL" commands from a file or stdin. It
+  finds the `.m3u8` request and reuses its URL and headers. Headers that would
+  break a plain download, such as `accept-encoding` or `range`, are dropped.
+- **Master playlists:** picks a variant with `-q best|worst|HEIGHT` (default
+  `best`) and prints every variant it found.
 - **Parallel downloads:** segments are fetched in parallel (`-j`, default 8),
   with exponential-backoff retries (`--retries`, default 5).
 - **MPEG-TS and fMP4 playlists:** for fMP4, the `EXT-X-MAP` init segment is
@@ -61,19 +72,52 @@ sudo apt install ffmpeg    # Debian/Ubuntu
 ## Usage
 
 ```
-hlsgrab.py SOURCE -o OUTPUT [-H "Name: value"]... [--base-url URL] [-j N] [--retries N]
+hlsgrab.py SOURCE -o OUTPUT [-q best|worst|HEIGHT] [-H "Name: value"]... [--pick N] [--list]
+                            [--base-url URL] [-j N] [--retries N]
 ```
 
 | Option | Description |
 |---|---|
-| `SOURCE` | Playlist URL (`http(s)://…`) or path to a local `.m3u8` file |
+| `SOURCE` | Playlist URL, local `.m3u8` file, or Chrome capture: `.har`, net-export `.json`, or a file of `curl …` commands. `-` reads the capture from stdin |
 | `-o, --output` | Output file. `.ts` or `.mp4` match the stream's native format; anything else is remuxed with ffmpeg |
-| `-H, --header` | Extra HTTP header, `"Name: value"`. Repeatable. Overrides the default `User-Agent: Mozilla/5.0` |
-| `--base-url` | Base URL for relative segment paths. Required for local files |
+| `-q, --quality` | Master playlist variant: `best` (default), `worst`, or a maximum height such as `720` / `720p`, which picks the best variant at or below it, or the smallest one if none fits |
+| `-H, --header` | Extra HTTP header, `"Name: value"`. Repeatable. Overrides captured headers and the default `User-Agent: Mozilla/5.0` |
+| `--list` | List the playlist requests found in a capture and exit |
+| `--pick N` | Use the N-th playlist request from the capture (default 1, the earliest) |
+| `--base-url` | Base URL for relative segment paths. Required for local `.m3u8` files |
 | `-j, --jobs` | Parallel segment downloads (default 8) |
-| `--retries` | Attempts per segment before giving up (default 5) |
+| `--retries` | Attempts per request for network errors and 5xx/429 responses (default 5). Other 4xx responses fail immediately |
 
 ### Examples
+
+From a Chrome capture:
+
+```bash
+./hlsgrab.py capture.har -o video.mp4                    # HAR export
+./hlsgrab.py chrome-net-export-log.json -o video.mp4     # chrome://net-export
+pbpaste | ./hlsgrab.py - -o video.mp4                    # "Copy as cURL" on the clipboard (macOS)
+```
+
+If the capture holds several playlists (an ad pre-roll, separate audio and
+video media playlists, …), list them and pick one:
+
+```bash
+./hlsgrab.py capture.har --list
+#  * 1: https://ads.example.net/preroll/master.m3u8
+#    2: https://cdn.example.com/hls/abc/master.m3u8
+./hlsgrab.py capture.har --pick 2 -o video.mp4
+```
+
+Choose the quality:
+
+```bash
+./hlsgrab.py capture.har -q 720 -o video.mp4    # best variant ≤ 720p
+./hlsgrab.py capture.har -q worst -o small.mp4
+# master playlist variants:
+#      1080p    5.00 Mbps  https://cdn.example.com/hls/abc/v1080/index.m3u8
+#    *  720p    2.80 Mbps  https://cdn.example.com/hls/abc/v720/index.m3u8
+#       360p    0.80 Mbps  https://cdn.example.com/hls/abc/v360/index.m3u8
+```
 
 Remote playlist with headers:
 
@@ -97,6 +141,29 @@ Go easier on the server:
 ```
 
 ## Capturing the request in Chrome
+
+### Quickest: hand the capture to `hlsgrab`
+
+1. Open the video page, open DevTools (**⌥⌘I** or **Ctrl+Shift+I**), and go to
+   the **Network** tab.
+2. **Reload** the page and **start playback**.
+3. Do one of the following:
+   - **HAR:** click the **Export HAR** (download arrow) button in the Network
+     toolbar and save `capture.har`. Recent Chrome versions export a
+     *sanitized* HAR without cookies by default. If the site needs cookies,
+     enable **Settings → Preferences → Network → Allow to generate HAR with
+     sensitive data** and choose **Export HAR (with sensitive data)**.
+   - **cURL:** type `m3u8` in the filter box, right-click the playlist request,
+     and choose **Copy → Copy as cURL (bash)**, or **Copy all as cURL (bash)**
+     to take every listed request. Then run `pbpaste | ./hlsgrab.py - -o
+     video.mp4`, or save the text to a file and pass that.
+4. Run `./hlsgrab.py capture.har -o video.mp4`.
+
+If DevTools is blocked, record a `chrome://net-export` log (see
+[below](#without-devtools-chromenet-export)) and pass the `.json` file in the
+same way.
+
+### By hand
 
 1. Open the page with the video in Chrome.
 2. Open DevTools: **⌥⌘I** (macOS) or **Ctrl+Shift+I** (Windows/Linux), then go
@@ -150,9 +217,11 @@ stack itself, so the page can't see or interfere with it.
 3. Click **Start Logging to Disk** and choose where to save the `.json` file.
 4. Switch to the video tab, **reload** it and **play** for a few seconds.
 5. Go back to the net-export tab and click **Stop Logging**.
+6. Run `./hlsgrab.py chrome-net-export-log.json -o video.mp4`. If the log was
+   recorded with **Strip private information**, `hlsgrab` warns that the
+   cookies were redacted.
 
-Then get the playlist URL and headers out of the log. The quickest way is
-from the shell:
+To inspect the log yourself instead, use the shell:
 
 ```bash
 # Playlist URLs
@@ -190,8 +259,18 @@ Notes:
   are refused, and DRM (Widevine, FairPlay, PlayReady) can't be handled.
 - **VOD only.** The playlist is read once. Live or event playlists that keep
   growing are not followed.
-- **The highest bandwidth always wins.** There is no flag to choose a lower
-  variant. Pass that variant's media playlist directly instead.
+- **Quality is chosen by height only.** `-q` compares `RESOLUTION` heights,
+  using bandwidth to break ties. Codec (H.264 vs HEVC), frame rate and
+  HDR are not considered. To get one exact variant, pass its media playlist
+  (shown in the variant list) as `SOURCE`.
+- **One set of headers for everything.** The headers of the captured playlist
+  request are reused for the variant playlist and every segment. If a CDN
+  requires different headers per host, override them with `-H`.
+- **Captures expire.** A HAR or NetLog file holds the headers and cookies as
+  they were when it was recorded. Signed URLs and session cookies stop working
+  eventually, so capture shortly before downloading.
+- **cURL parsing is for the bash variant.** "Copy as cURL (cmd)" and
+  "Copy as PowerShell" output isn't understood.
 - **No separate audio or subtitle renditions.** `EXT-X-MEDIA` alternate audio
   and subtitle tracks are ignored. If a site puts audio in its own rendition,
   the output will have no sound.
@@ -203,9 +282,9 @@ Notes:
 - **Discontinuities.** Segments are joined byte-for-byte. Streams with
   `EXT-X-DISCONTINUITY` (inserted ads, mixed encodings) may give timestamp
   glitches. Remuxing through ffmpeg usually smooths these over.
-- **Basic retry logic.** Any error, including a 403 or 404, is retried with
-  backoff up to `--retries` times. A bad header therefore takes a while to fail
-  instead of failing fast.
+- **Simple retry logic.** Network errors, 5xx and 429 responses are retried
+  with exponential backoff. Other 4xx responses fail immediately. There's no
+  `Retry-After` handling and no resuming of a partly finished download.
 
 ### Why not `ffmpeg -i URL` or `yt-dlp`?
 
