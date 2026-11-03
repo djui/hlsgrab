@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.ts
+*.mp4
+*.mkv
+*.m3u8
